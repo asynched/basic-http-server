@@ -1,14 +1,14 @@
 mod server;
 
-use server::http::HttpServer;
-
-use crate::server::http::{HttpResponseBuilder, HttpStatusCode};
+use server::http::{HttpResponseBuilder, HttpServer, HttpStatusCode};
 
 fn main() {
     let addr = "127.0.0.1:3000";
 
-    let server = HttpServer::new(|_request| {
+    let server = HttpServer::new(|request| {
         let response = HttpResponseBuilder::new();
+
+        println!("{:?}", request);
 
         response
             .status(HttpStatusCode::Ok)

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
+use std::str::FromStr;
 
+#[derive(Debug, Clone)]
 pub enum HttpStatusCode {
     Ok,
     Created,
@@ -21,8 +23,8 @@ pub enum HttpStatusCode {
     ServiceUnavailable,
 }
 
-impl Into<(i32, &'static str)> for HttpStatusCode {
-    fn into(self) -> (i32, &'static str) {
+impl HttpStatusCode {
+    fn to_http_status(self) -> (i32, &'static str) {
         return match self {
             HttpStatusCode::Ok => (200, "OK"),
             HttpStatusCode::Created => (201, "CREATED"),
@@ -44,6 +46,7 @@ impl Into<(i32, &'static str)> for HttpStatusCode {
     }
 }
 
+#[derive(Debug)]
 pub enum HttpMethod {
     Get,
     Post,
@@ -55,6 +58,25 @@ pub enum HttpMethod {
     Trace,
 }
 
+impl FromStr for HttpMethod {
+    type Err = ();
+
+    fn from_str(method: &str) -> Result<Self, Self::Err> {
+        return match method {
+            "GET" => Ok(HttpMethod::Get),
+            "POST" => Ok(HttpMethod::Post),
+            "PUT" => Ok(HttpMethod::Put),
+            "PATCH" => Ok(HttpMethod::Patch),
+            "DELETE" => Ok(HttpMethod::Delete),
+            "HEAD" => Ok(HttpMethod::Head),
+            "OPTIONS" => Ok(HttpMethod::Options),
+            "TRACE" => Ok(HttpMethod::Trace),
+            _ => Err(()),
+        };
+    }
+}
+
+#[derive(Debug)]
 pub struct HttpRequest {
     pub method: HttpMethod,
     pub path: String,
@@ -66,6 +88,25 @@ pub struct HttpResponse {
     pub status: HttpStatusCode,
     pub headers: HashMap<String, String>,
     pub body: String,
+}
+
+impl ToString for HttpResponse {
+    fn to_string(&self) -> String {
+        let (status_code, status) = self.status.clone().to_http_status();
+
+        let mut headers = String::new();
+
+        for (key, value) in &self.headers {
+            headers.push_str(&format!("{}: {}\r\n", key, value));
+        }
+
+        let response = format!(
+            "HTTP/1.1 {} {}\r\n{}\r\n{}",
+            status_code, status, headers, self.body
+        );
+
+        return response;
+    }
 }
 
 pub struct HttpResponseBuilder {
@@ -122,38 +163,99 @@ impl HttpServer {
         let listener = TcpListener::bind(addr)?;
 
         while let Ok((mut stream, _)) = listener.accept() {
-            let mut buffer = [0; 8192];
-            stream.read(&mut buffer).unwrap();
+            let Ok(request) = parse_request(&mut stream) else {
+                continue;
+            };
 
-            let request = parse_request(&buffer);
             let response = (self.handler)(request);
 
-            let (status_code, status) = response.status.into();
-
-            let mut headers = String::new();
-
-            for (key, value) in response.headers {
-                headers.push_str(&format!("{}: {}\r\n", key, value));
+            if let Ok(_) = stream.write(response.to_string().as_bytes()) {
+                match stream.flush() {
+                    Err(err) => println!("Error: {}", err),
+                    _ => (),
+                };
             }
-
-            let response = format!(
-                "HTTP/1.1 {} {}\r\n{}\r\n{}",
-                status_code, status, headers, response.body
-            );
-
-            stream.write(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
         }
 
         return Ok(());
     }
 }
 
-fn parse_request(_buffer: &[u8]) -> HttpRequest {
-    return HttpRequest {
-        body: "".to_string(),
-        headers: HashMap::new(),
-        method: HttpMethod::Get,
-        path: "".to_string(),
+enum ParseError {
+    Unknown,
+}
+
+fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, ParseError> {
+    let mut buffer = [0; 2048];
+
+    stream.read(&mut buffer).unwrap();
+
+    let source = String::from_utf8_lossy(&buffer);
+
+    let mut lines = source.split("\r\n");
+
+    let Some(first_line) = lines.next() else {
+        return Err(ParseError::Unknown);
     };
+
+    let mut parts = first_line.split_whitespace();
+
+    let Some(Ok(method)) = parts.next().map(|method| method.parse::<HttpMethod>()) else {
+        return Err(ParseError::Unknown);
+    };
+
+    let Some(path) = parts.next().map(|path| path.to_string()) else {
+        return Err(ParseError::Unknown);
+    };
+
+    let mut headers = HashMap::new();
+
+    for line in lines.clone() {
+        if line.is_empty() {
+            break;
+        }
+
+        let mut parts = line.splitn(2, ": ");
+
+        let key = parts.next().unwrap().to_string();
+        let value = parts.next().unwrap().to_string();
+
+        headers.insert(key, value);
+    }
+
+    let content_length = headers
+        .get("Content-Length")
+        .map(|value| value.parse::<usize>())
+        .unwrap_or(Ok(0))
+        .unwrap();
+
+    let body = lines
+        .skip(headers.len() + 1)
+        .collect::<Vec<&str>>()
+        .join("\r\n");
+
+    let body = body.trim_matches(char::from(0));
+    let left_to_read = content_length - body.len();
+
+    if left_to_read == 0 {
+        return Ok(HttpRequest {
+            method,
+            path,
+            headers,
+            body: body.to_string(),
+        });
+    }
+
+    let mut buffer = vec![0; left_to_read];
+
+    stream.read(&mut buffer).unwrap();
+
+    let body = format!("{}{}", body, String::from_utf8_lossy(&buffer));
+
+    return Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    });
 }

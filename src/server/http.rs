@@ -21,9 +21,9 @@ pub enum HttpStatusCode {
     ServiceUnavailable,
 }
 
-impl HttpStatusCode {
-    fn into_http_status(self) -> (i32, &'static str) {
-        match self {
+impl Into<(i32, &'static str)> for HttpStatusCode {
+    fn into(self) -> (i32, &'static str) {
+        return match self {
             HttpStatusCode::Ok => (200, "OK"),
             HttpStatusCode::Created => (201, "CREATED"),
             HttpStatusCode::Accepted => (202, "ACCEPTED"),
@@ -40,12 +40,23 @@ impl HttpStatusCode {
             HttpStatusCode::NotImplemented => (501, "NOT IMPLEMENTED"),
             HttpStatusCode::BadGateway => (502, "BAD GATEWAY"),
             HttpStatusCode::ServiceUnavailable => (503, "SERVICE UNAVAILABLE"),
-        }
+        };
     }
 }
 
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Head,
+    Options,
+    Trace,
+}
+
 pub struct HttpRequest {
-    pub method: String,
+    pub method: HttpMethod,
     pub path: String,
     pub headers: HashMap<String, String>,
     pub body: String,
@@ -53,7 +64,47 @@ pub struct HttpRequest {
 
 pub struct HttpResponse {
     pub status: HttpStatusCode,
+    pub headers: HashMap<String, String>,
     pub body: String,
+}
+
+pub struct HttpResponseBuilder {
+    status: HttpStatusCode,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+impl HttpResponseBuilder {
+    pub fn new() -> HttpResponseBuilder {
+        return HttpResponseBuilder {
+            status: HttpStatusCode::Ok,
+            headers: HashMap::new(),
+            body: "".to_string(),
+        };
+    }
+
+    pub fn status(mut self, status: HttpStatusCode) -> HttpResponseBuilder {
+        self.status = status;
+        return self;
+    }
+
+    pub fn header(mut self, key: &str, value: &str) -> HttpResponseBuilder {
+        self.headers.insert(key.to_string(), value.to_string());
+        return self;
+    }
+
+    pub fn body(mut self, body: &str) -> HttpResponseBuilder {
+        self.body = body.to_string();
+        return self;
+    }
+
+    pub fn build(self) -> HttpResponse {
+        return HttpResponse {
+            status: self.status,
+            headers: self.headers,
+            body: self.body,
+        };
+    }
 }
 
 pub struct HttpServer {
@@ -77,11 +128,19 @@ impl HttpServer {
             let request = parse_request(&buffer);
             let response = (self.handler)(request);
 
-            let (status_code, status) = response.status.into_http_status();
+            let (status_code, status) = response.status.into();
+
+            let mut headers = String::new();
+
+            for (key, value) in response.headers {
+                headers.push_str(&format!("{}: {}\r\n", key, value));
+            }
+
             let response = format!(
-                "HTTP/1.1 {} {}\r\n\r\n{}",
-                status_code, status, response.body
+                "HTTP/1.1 {} {}\r\n{}\r\n{}",
+                status_code, status, headers, response.body
             );
+
             stream.write(response.as_bytes()).unwrap();
             stream.flush().unwrap();
         }
@@ -90,11 +149,11 @@ impl HttpServer {
     }
 }
 
-fn parse_request(buffer: &[u8]) -> HttpRequest {
+fn parse_request(_buffer: &[u8]) -> HttpRequest {
     return HttpRequest {
         body: "".to_string(),
         headers: HashMap::new(),
-        method: "".to_string(),
+        method: HttpMethod::Get,
         path: "".to_string(),
     };
 }
